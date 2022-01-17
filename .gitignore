@@ -1,0 +1,6 @@
+ArduinoOutput/
+Example1_DisplayTest/
+WebSocketServer/
+.vscode/c_cpp_properties.json
+.vscode/settings.json
+.vscode/arduino.json

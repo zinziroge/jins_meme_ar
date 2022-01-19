@@ -34,7 +34,8 @@
 */
 
 #include <Arduino.h>
-#include <M5StickC.h>
+//#include <M5StickC.h>
+#include <M5StickCPlus.h>
 
 // at C:\Users\xxx\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.5\libraries\WiFi
 #include <WiFi.h>
@@ -68,6 +69,31 @@
 #define SSID_AP        HOME_SSID_AP
 #define SSID_PASSWORD  HOME_SSID_PASSWORD
 // END USER SETUP
+
+typedef struct {
+    // invalid
+    uint16_t    blinkSpeed; // 静止指標	Int	Number	まばたき速度、閉眼時間(mSec)	0-400(通常90−180付近)
+    uint16_t    blinkStrength; // 静止指標	Int	Number	まばたき強度(uV-equiv)	0-1000(通常30−150付近)
+    uint16_t    eyeMoveUp; // 静止指標	Int	Number	視線が上に動いた時のイベント	0: 検知無し 1: 極小-7: 特大
+    uint8_t     eyeMoveDown; // 静止指標	Int	Number	視線が下に動いた時のイベント	0: 検知無し 1: 極小-7: 特大
+    uint8_t     eyeMoveLeft; // 静止指標	Int	Number	視線が左に動いた時のイベント	0: 検知無し 1: 極小-7: 特大
+    uint8_t     eyeMoveRight; // 静止指標	Int	Number	視線が右に動いた時のイベント	0: 検知無し 1: 極小-7: 特大
+    float       roll; //	Float	Number	姿勢角のロール成分（左右傾き）を示す度	-180.00 - 180.00
+    float       pitch; //	Float	Number	姿勢角のピッチ成分（前後傾き）を示す度	-180.00 - 180.00
+    float       yaw; //	Float	Number	姿勢角のヨー成分（横回転）を示す度	0.00 - 360.00
+    // valid
+    float       accX; //	Float	Number	加速度のX軸成分（左右）、1G=16	-128(-8G) - 127(7.9375G)
+    float       accY; //	Float	Number	加速度のY軸成分（前後）、1G=16	-128(-8G) - 127(7.9375G)
+    float       accZ; //	Float	Number	加速度のZ軸成分（上下）、1G=16	-128(-8G) - 127(7.9375G)
+    // invalid ?
+    int8_t      walking; //(isWalking) 歩行指標	boolean	Number	かかとが地面についた時の一歩の検知(検知後0.15~0.25s後にフラグ)	0/false: 検知無し 1/true: 検知有り
+    // valid
+    int8_t      noiseStatus; //	boolean	Number	眼電位電極のノイズ状況を表す整数値	0/false: ノイズ無し 1/true: ノイズ有り
+    int8_t      fitError; //	Int	Number	JINS MEMEが実際に装着されているかどうか、揺れで5秒に1回判定	0: 装着中 1: 非装着
+    // valid
+    int8_t      powerLeft; //	Int	Number	電池残量を表す整数値	0: 充電中 1: 空-5: 満充電
+    uint8_t     sequenceNumber; //(seqNo)	Int	Number	0-255までの循環連番整数	0-255
+} currentData_T;
 
 typedef struct {
     // valid
@@ -157,7 +183,7 @@ IPAddress DNS(192, 168, 0, 1);
 
 StaticJsonDocument<1024> json_buf;  // メモリを確保(静的)
 
-//currentData_T       jins_meme_currentData;
+currentData_T       jins_meme_currentData;
 logicIndexData_T    jins_meme_logicIndexData;
 
 // Object Declaration. A class exists for each interface option
@@ -166,6 +192,10 @@ UG2856KLBAG01_SPI myTOLED; // Declare a SPI-based Transparent OLED object called
 #else
 UG2856KLBAG01_I2C myTOLED; // Declare a I2C-based Transparent OLED object called myTOLED
 #endif /* USE_SPI */
+
+//
+uint8_t which_log;
+uint32_t m5stick_lcd_cur_y;
 
 //////////////////////////////////////////////////////////////////////////////
 void setup_uart(const int baudrate) {
@@ -255,21 +285,26 @@ void setup()
 
     i2c_scanner();
 
-    setup_wifi();
-    setup_OLED();
-
     // Initialize the M5StickC object
     M5.begin();
     // LCD display
-    //M5.Lcd.print("Hello World");
+    M5.Lcd.setCursor(0, 0, 4);
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.print("jins meme logger");
+
+    setup_wifi();
+    setup_OLED();
 
 // Don't show the logo on boards with small memory
 #if !defined(__AVR_ATmega328P__) && !defined(__AVR_ATmega168__)
-    //showLogo(); // The showLogo function is a hacky way to get a large bitmap into program space without using <avr/pgspace.h>
+    showLogo(); // The showLogo function is a hacky way to get a large bitmap into program space without using <avr/pgspace.h>
 #endif
 
     webSocket.begin();
     webSocket.onEvent(webSocketEvent);
+    
+    which_log = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -291,6 +326,12 @@ void loop()
     delay(3000);
     inverted = !inverted;
     */
+
+    M5.update();    //You need to add M5.update () to read the status of the keystroke. For details, please see System. 
+    if (M5.BtnA.isPressed()) {    //If the key is pressed. 
+        which_log = (which_log==0) ? 1 : 0;
+        myTOLED.clearDisplay();
+    }
 
     webSocket.loop();
 }
@@ -335,7 +376,11 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             deserializeJson(json_buf, payload);       // json形式に変換
             //print_currentData();
             //print_logicIndexData();
-            draw_logicIndexData();
+            if(which_log==0) {
+                draw_currentData();
+            } else {
+                draw_logicIndexData();
+            }
 
             // send message to client
             // webSocket.sendTXT(num, "message here");
@@ -358,6 +403,72 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 			break;
     }
 
+}
+
+float flimit(const float v, const float _min, const float _max) {
+    if(v < _min) {
+        return _min;
+    } else if(v > _max) {
+        return _max;
+    } else {
+        return v;
+    }
+}
+
+void draw_currentData() {
+    // valid
+    // float       accX; //	Float	Number	加速度のX軸成分（左右）、1G=16	-128(-8G) - 127(7.9375G)
+    // float       accY; //	Float	Number	加速度のY軸成分（前後）、1G=16	-128(-8G) - 127(7.9375G)
+    // float       accZ; //	Float	Number	加速度のZ軸成分（上下）、1G=16	-128(-8G) - 127(7.9375G)
+    const int step_y = 12;
+    int y = 0;
+    char buf[32];
+    char *param[] = {
+        "accX",
+        "accY",
+        "accZ",
+    };
+    char *param_short[] = {
+        "accX",
+        "accY",
+        "accZ",
+    };
+    static float prev_v[3] = {0};
+
+    //myTOLED.clearDisplay();
+
+    myTOLED.setTextCursor(0, y);
+    y += step_y;
+
+    int i;
+    for(i=0; i < 3; i++) {
+        float v = json_buf[param[i]]; // 値の取り出し
+        v = flimit(v / 128.0 * 80, -40.0, 40.0);
+
+        // clear
+        myTOLED.setTextCursor(0, y);
+        myTOLED.rectangleClear(
+            28 + 100/2, y + 2,
+            28 + 100/2 + prev_v[i], y + step_y - 2,
+            false);
+
+        // set
+        //sprintf(buf, "%s: %3.0f/100", param_short[i], v);
+        myTOLED.setTextCursor(0, y);
+        sprintf(buf, "%s", param_short[i]);
+        myTOLED.print(buf);
+        //myTOLED.setTextCursor(0, y);
+        myTOLED.setTextCursor(0, y);
+        myTOLED.lineSet(28 + v, y + 2, 28 + v, y + step_y - 2, 1);
+        myTOLED.rectangleSet(
+            28 + 100/2, y + 2,
+            28 + 100/2 + v, y + step_y - 2,
+            false);
+
+        USE_SERIAL.printf("%s: %f\n", param[i], v);
+        y += step_y;
+        prev_v[i] = v;
+    }
 }
 
 void draw_logicIndexData() {

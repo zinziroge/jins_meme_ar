@@ -68,6 +68,8 @@
 // define at <ssid_define.h>
 #define SSID_AP        HOME_SSID_AP
 #define SSID_PASSWORD  HOME_SSID_PASSWORD
+
+#define MIN_INTERVAL_MS     3000        // 3sec
 // END USER SETUP
 
 typedef struct {
@@ -196,8 +198,23 @@ UG2856KLBAG01_I2C myTOLED; // Declare a I2C-based Transparent OLED object called
 //
 uint8_t which_log;
 uint32_t m5stick_lcd_cur_y;
+char m5stick_lcd_buf[8*24];
+DeserializationError g_err_json;
 
 //////////////////////////////////////////////////////////////////////////////
+void print_both(const char* s) {
+    USE_SERIAL.println(s);
+
+    int16_t y = M5.Lcd.getCursorY();
+    if(y > 240) {
+        y = 0;
+        M5.Lcd.fillScreen(BLACK);
+    }
+    M5.Lcd.setCursor(0, y);
+    M5.Lcd.print("\n");
+    M5.Lcd.print(s);
+}
+
 void setup_uart(const int baudrate) {
     // USE_SERIAL.begin(921600);
     USE_SERIAL.begin(baudrate);
@@ -228,7 +245,24 @@ void setup_wifi() {
         delay(100);
         USE_SERIAL.println("connect to WiFi ...");
     }
+    IPAddress ip = WiFi.localIP();
+
+    int16_t y = M5.Lcd.getCursorY();
+    M5.Lcd.setCursor(0, y);
+    M5.Lcd.print("\n");
+    M5.Lcd.print("IP Adr: ");
+    M5.Lcd.print(ip);
+    Serial.print("IP Adr: ");
+    Serial.println(ip);
+
+    print_both("WiFi Ready!");
+    /*
     USE_SERIAL.println("WiFi Ready !");
+
+    M5.Lcd.setCursor(0, M5.Lcd.getCursorY());
+    M5.Lcd.print("\n");
+    M5.Lcd.print("WiFi Ready !");
+    */
 }
 
 void setup_OLED() {
@@ -271,10 +305,11 @@ void i2c_scanner()
             Serial.println(address, HEX);
         }
     }
-    if (nDevices == 0)
+    if (nDevices == 0) {
         Serial.println("No I2C devices found\n");
-    else
-        Serial.println("done\n");
+    } else {
+        Serial.println("I2C scan is done\n");
+    }
 
     delay(5000); // wait 5 seconds for the next I2C scan
 }
@@ -325,15 +360,31 @@ void loop()
     myTOLED.print("Hello world!!");
     delay(3000);
     inverted = !inverted;
-    */
 
     M5.update();    //You need to add M5.update () to read the status of the keystroke. For details, please see System. 
     if (M5.BtnA.isPressed()) {    //If the key is pressed. 
         which_log = (which_log==0) ? 1 : 0;
         myTOLED.clearDisplay();
     }
+    */
+    static uint32_t prev_t;
+    uint32_t cur_t = millis();
+    uint32_t dt = cur_t - prev_t;
 
+    // flush
+    //do {
+    //    webSocket.loop();
+    //    Serial.println(g_err_json.c_str());
+    //} while(g_err_json == DeserializationError::Ok);
     webSocket.loop();
+
+    // @note because it has much time to draw.
+    if(dt > MIN_INTERVAL_MS) {
+        draw_logicIndexData_2();
+        draw_currentData_2();
+        prev_t = cur_t;
+    }
+
 }
 
 void print_logicIndexData() {
@@ -357,6 +408,10 @@ void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    float f;
+    char buf[32];
+    g_err_json = DeserializationError::InvalidInput;
+    USE_SERIAL.printf("g_err_json=%s", g_err_json.c_str());
 
     switch(type) {
         case WStype_DISCONNECTED:
@@ -373,13 +428,27 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             break;
         case WStype_TEXT:
             USE_SERIAL.printf("[%u] get Text: %s\n", num, payload);
-            deserializeJson(json_buf, payload);       // json形式に変換
+            //deserializeJson(json_buf, payload);       // json形式に変換
+            g_err_json = deserializeJson(json_buf, payload);
+            if(g_err_json != DeserializationError::Ok) {
+                break;
+            }
             //print_currentData();
             //print_logicIndexData();
-            if(which_log==0) {
-                draw_currentData();
+            //int is_logicIndexData;
+            //const char *is_logicIndexData;
+            //is_logicIndexData = json_buf["date"];
+            //print_both(is_logicIndexData);
+            f = json_buf["xMean"];
+            //sprintf(buf, "isLgcId:%d", f!=0);
+            //print_both(buf);
+            //USE_SERIAL.printf("is_logicIndexDate: %f\n", f);
+            //char buf[32];
+            //USE_SERIAL.printf("is_logicIndexDate: %d\n", is_logicIndexData);
+            if(f) {
+                read_logicIndexData();
             } else {
-                draw_logicIndexData();
+                read_currentData();
             }
 
             // send message to client
@@ -415,6 +484,125 @@ float flimit(const float v, const float _min, const float _max) {
     }
 }
 
+void read_currentData() {
+    jins_meme_currentData.sequenceNumber = json_buf["sequenceNumber"];
+    jins_meme_currentData.accX = json_buf["accX"];
+    jins_meme_currentData.accY = json_buf["accY"];
+    jins_meme_currentData.accZ = json_buf["accZ"];
+}
+
+void read_logicIndexData() {
+    jins_meme_logicIndexData.sleepScoreStandard = json_buf["sleepScoreStandard"];
+    jins_meme_logicIndexData.focusScore = json_buf["focusScore"];
+    jins_meme_logicIndexData.tensionScore = json_buf["tensionScore"];
+    jins_meme_logicIndexData.calmScore = json_buf["calmScore"];
+}
+
+void draw_currentData_2() {
+    // valid
+    // float       accX; //	Float	Number	加速度のX軸成分（左右）、1G=16	-128(-8G) - 127(7.9375G)
+    // float       accY; //	Float	Number	加速度のY軸成分（前後）、1G=16	-128(-8G) - 127(7.9375G)
+    // float       accZ; //	Float	Number	加速度のZ軸成分（上下）、1G=16	-128(-8G) - 127(7.9375G)
+    const int step_y = 12;
+    char buf[32];
+    char *param_short[] = {
+        "sn",
+        "aX",
+        "aY",
+        "aZ",
+    };
+    static float prev_v[4] = {0};
+    float cur_v[4] = {
+        (float)jins_meme_currentData.sequenceNumber,
+        jins_meme_currentData.accX,
+        jins_meme_currentData.accY,
+        jins_meme_currentData.accZ,
+    };
+    int y = 0;
+
+    /// param name
+    myTOLED.rectangleClear(100, y, 128, y + step_y, true);
+    myTOLED.setTextCursor(100, 0);
+    sprintf(buf, "%3.0f", cur_v[0]);
+    myTOLED.print(buf);
+    y += step_y;
+
+    int i;
+    for(i=1; i < 4; i++) {
+        float v = flimit(cur_v[i] / 128.0 * 60, -20.0, 20.0);
+
+        // clear
+        myTOLED.setTextCursor(0, y);
+        myTOLED.rectangleClear(
+            72, y + 2,
+            72 + prev_v[i], y + step_y - 2,
+            false);
+
+        // set
+        myTOLED.setTextCursor(100, y);
+        sprintf(buf, "%s", param_short[i]);
+        myTOLED.print(buf);
+        myTOLED.rectangleSet(
+            72, y + 2,
+            72 + v, y + step_y - 2,
+            false);
+
+        //USE_SERIAL.printf("%s: %f\n", param_short[i], v);
+        y += step_y;
+        prev_v[i] = v;
+    }
+    myTOLED.lineSet(72, 12, 72, 48, 1);
+}
+
+void draw_logicIndexData_2() {
+    // valid
+    // float       sleepScoreStandard;    //静止指標	sc_slp_std	Number(float)	低覚醒スコア(通常時)、まばたき強さ・速度と一部まばたき間隔から「目がトロンとなっている状態」を指標化したもの	有効時: 0(覚醒高い)-100(眠い)、無効: -1
+    // float       sleepScore;    //静止指標	sc_slp	Number(float)	低覚醒スコア(運転時)、運転時の姿勢(まっすぐ前を向いている状態)でクレンジングし、精度を高めたもの	有効時: 0(覚醒高い)-100(眠い)、無効: -1
+    // float       focusScore;    //静止指標	sc_fcs	Number(float)	没入スコア、まばたき間隔を利用し「ある一つのタスクへの注意が続いている状態」を指標化したもの	有効時: 0(没入度が低い)-100(没入度が高い)、無効: -1
+    // float       tensionScore;    //静止指標	sc_tsn	Number(float)	テンションスコア、まばたき強さを利用し「目が見開いている状態」を指標化したもの	有効時: 0(緊張が弱い)-100(緊張が強い)、無効: -1
+    // float       calmScore;    //静止指標	sc_clm	Number(float)	安定スコア、まばたき強さを利用し「外部・内部刺激を受けずに安定している状態」を指標化したもの	有効時: 0(落ち着いていない)-100(落ち着いている)、無効: -1
+    const int step_y = 12;
+    char buf[32];
+    char *param_short[] = {
+        "sleep",
+        "focus",
+        "tens ",
+        "calm ",
+    };
+    static float prev_v[4] = {0};
+    float cur_v[4] = {
+        jins_meme_logicIndexData.sleepScoreStandard,
+        jins_meme_logicIndexData.focusScore,
+        jins_meme_logicIndexData.tensionScore,
+        jins_meme_logicIndexData.calmScore,
+    };
+
+    int i;
+    int y = 0;
+    for(i=0; i < 4; i++) {
+        float v = cur_v[i] * 0.25;
+
+        // clear
+        myTOLED.rectangleClear(
+            28, y + 2,
+            28 + prev_v[i], y + step_y - 2,
+            false);
+
+        // set
+        myTOLED.setTextCursor(0, y);
+        sprintf(buf, "%s", param_short[i]);
+        myTOLED.print(buf);
+        myTOLED.rectangleSet(
+            28, y + 2,
+            28 + v, y + step_y - 2,
+            false);
+
+        //USE_SERIAL.printf("%s: %f\n", param_short[i], v);
+        y += step_y;
+        prev_v[i] = v;
+    }
+}
+
 void draw_currentData() {
     // valid
     // float       accX; //	Float	Number	加速度のX軸成分（左右）、1G=16	-128(-8G) - 127(7.9375G)
@@ -424,11 +612,13 @@ void draw_currentData() {
     int y = 0;
     char buf[32];
     char *param[] = {
+        "fitError",
         "accX",
         "accY",
         "accZ",
     };
     char *param_short[] = {
+        "fit",
         "accX",
         "accY",
         "accZ",

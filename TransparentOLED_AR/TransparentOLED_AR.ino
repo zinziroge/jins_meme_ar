@@ -69,7 +69,7 @@
 #define SSID_AP        HOME_SSID_AP
 #define SSID_PASSWORD  HOME_SSID_PASSWORD
 
-#define MIN_INTERVAL_MS     3000        // 3sec
+#define MIN_INTERVAL_MS     1000        // 3sec
 // END USER SETUP
 
 typedef struct {
@@ -176,7 +176,8 @@ typedef struct {
 
 // wifi
 WiFiMulti WiFiMulti;
-WebSocketsServer webSocket = WebSocketsServer(8080);
+WebSocketsServer webSocket_c = WebSocketsServer(8080);
+WebSocketsServer webSocket_l = WebSocketsServer(8081);
 
 IPAddress ip(192, 168, 0, 20); //ip
 IPAddress gateway(192, 168, 0, 1);
@@ -196,22 +197,26 @@ UG2856KLBAG01_I2C myTOLED; // Declare a I2C-based Transparent OLED object called
 #endif /* USE_SPI */
 
 //
-uint8_t which_log;
 uint32_t m5stick_lcd_cur_y;
 char m5stick_lcd_buf[8*24];
 DeserializationError g_err_json;
+static uint32_t g_c_cnt=0;
+static uint32_t g_cnt_l=0;
+char g_buf[64];
 
 //////////////////////////////////////////////////////////////////////////////
 void print_both(const char* s) {
     USE_SERIAL.println(s);
 
     int16_t y = M5.Lcd.getCursorY();
-    if(y > 240) {
+    if(240 - y < 40) {
         y = 0;
         M5.Lcd.fillScreen(BLACK);
+        M5.Lcd.setCursor(0, y);
+    } else {
+        //M5.Lcd.setCursor(0, y);
+        M5.Lcd.print("\n");
     }
-    M5.Lcd.setCursor(0, y);
-    M5.Lcd.print("\n");
     M5.Lcd.print(s);
 }
 
@@ -255,7 +260,7 @@ void setup_wifi() {
     Serial.print("IP Adr: ");
     Serial.println(ip);
 
-    print_both("WiFi Ready!");
+    print_both("WiFi Ready");
     /*
     USE_SERIAL.println("WiFi Ready !");
 
@@ -306,9 +311,11 @@ void i2c_scanner()
         }
     }
     if (nDevices == 0) {
-        Serial.println("No I2C devices found\n");
+        //Serial.println("No I2C devices found\n");
+        print_both("No I2C devices found");
     } else {
-        Serial.println("I2C scan is done\n");
+        //Serial.println("I2C scan is done\n");
+        print_both("I2C scan is done");
     }
 
     delay(5000); // wait 5 seconds for the next I2C scan
@@ -317,8 +324,6 @@ void i2c_scanner()
 void setup()
 {
     setup_uart(115200);
-
-    i2c_scanner();
 
     // Initialize the M5StickC object
     M5.begin();
@@ -333,13 +338,15 @@ void setup()
 
 // Don't show the logo on boards with small memory
 #if !defined(__AVR_ATmega328P__) && !defined(__AVR_ATmega168__)
-    showLogo(); // The showLogo function is a hacky way to get a large bitmap into program space without using <avr/pgspace.h>
+    //showLogo(); // The showLogo function is a hacky way to get a large bitmap into program space without using <avr/pgspace.h>
 #endif
 
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
-    
-    which_log = 0;
+    webSocket_c.begin();
+    webSocket_l.begin();
+    webSocket_c.onEvent(webSocket_c_Event);
+    webSocket_l.onEvent(webSocket_l_Event);
+
+    i2c_scanner();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -367,24 +374,38 @@ void loop()
         myTOLED.clearDisplay();
     }
     */
-    static uint32_t prev_t;
+
+    static uint32_t prev_draw_t;
+    static uint32_t prev_loop_t;
     uint32_t cur_t = millis();
-    uint32_t dt = cur_t - prev_t;
+    uint32_t dt_draw = cur_t - prev_draw_t;
+    uint32_t dt_loop = cur_t - prev_loop_t;
 
     // flush
     //do {
     //    webSocket.loop();
     //    Serial.println(g_err_json.c_str());
     //} while(g_err_json == DeserializationError::Ok);
-    webSocket.loop();
+    int i;
+    for(i=0; i < 100; i++) {
+        webSocket_c.loop();
+    }
+    sprintf(g_buf, "%3d,%2.1f,%2.1f", 
+        g_c_cnt, 
+        dt_loop/1000.0,
+        dt_draw/1000.0);
+    print_both(g_buf);
+    g_c_cnt = 0;
+    webSocket_l.loop();
 
-    // @note because it has much time to draw.
-    if(dt > MIN_INTERVAL_MS) {
+    //// @note because it has much time to draw.
+    if(dt_draw > MIN_INTERVAL_MS) {
         draw_logicIndexData_2();
         draw_currentData_2();
-        prev_t = cur_t;
+        prev_draw_t = cur_t;
     }
 
+    prev_loop_t = cur_t;
 }
 
 void print_logicIndexData() {
@@ -407,49 +428,36 @@ void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 	USE_SERIAL.printf("\n");
 }
 
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+void webSocket_c_Event(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
     float f;
     char buf[32];
-    g_err_json = DeserializationError::InvalidInput;
-    USE_SERIAL.printf("g_err_json=%s", g_err_json.c_str());
+    //g_err_json = DeserializationError::InvalidInput;
+    //USE_SERIAL.printf("c_type: %d\n", type);
 
     switch(type) {
         case WStype_DISCONNECTED:
             USE_SERIAL.printf("[%u] Disconnected!\n", num);
+                print_both("disconn_c");
             break;
         case WStype_CONNECTED:
             {
-                IPAddress ip = webSocket.remoteIP(num);
+                IPAddress ip = webSocket_c.remoteIP(num);
                 USE_SERIAL.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+                print_both("conn_c");
 
 				// send message to client
-				webSocket.sendTXT(num, "Connected");
+				webSocket_c.sendTXT(num, "Connected");
             }
             break;
         case WStype_TEXT:
-            USE_SERIAL.printf("[%u] get Text: %s\n", num, payload);
-            //deserializeJson(json_buf, payload);       // json形式に変換
+            //USE_SERIAL.printf("c::[%u] get Text: %s\n", num, payload);
             g_err_json = deserializeJson(json_buf, payload);
+            //USE_SERIAL.printf("c:%s\n", g_err_json.c_str());
             if(g_err_json != DeserializationError::Ok) {
                 break;
             }
-            //print_currentData();
-            //print_logicIndexData();
-            //int is_logicIndexData;
-            //const char *is_logicIndexData;
-            //is_logicIndexData = json_buf["date"];
-            //print_both(is_logicIndexData);
-            f = json_buf["xMean"];
-            //sprintf(buf, "isLgcId:%d", f!=0);
-            //print_both(buf);
-            //USE_SERIAL.printf("is_logicIndexDate: %f\n", f);
-            //char buf[32];
-            //USE_SERIAL.printf("is_logicIndexDate: %d\n", is_logicIndexData);
-            if(f) {
-                read_logicIndexData();
-            } else {
-                read_currentData();
-            }
+            read_currentData();
+            g_c_cnt += 1;
 
             // send message to client
             // webSocket.sendTXT(num, "message here");
@@ -464,7 +472,59 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             // send message to client
             // webSocket.sendBIN(num, payload, length);
             break;
-		case WStype_ERROR:			
+		case WStype_ERROR:
+		case WStype_FRAGMENT_TEXT_START:
+		case WStype_FRAGMENT_BIN_START:
+		case WStype_FRAGMENT:
+		case WStype_FRAGMENT_FIN:
+			break;
+    }
+
+}
+
+void webSocket_l_Event(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    float f;
+    char buf[32];
+    USE_SERIAL.printf("l_type: %d\n", type);
+
+    switch(type) {
+        case WStype_DISCONNECTED:
+            USE_SERIAL.printf("[%u] Disconnected!\n", num);
+                print_both("disconn_l");
+            break;
+        case WStype_CONNECTED:
+            {
+                IPAddress ip = webSocket_l.remoteIP(num);
+                USE_SERIAL.printf("l::[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+                print_both("conn_l");
+				// send message to client
+				webSocket_l.sendTXT(num, "Connected");
+            }
+            break;
+        case WStype_TEXT:
+            USE_SERIAL.printf("[%u] get Text: %s\n", num, payload);
+            g_err_json = deserializeJson(json_buf, payload);
+            USE_SERIAL.printf("l:%s\n", g_err_json.c_str());
+            if(g_err_json != DeserializationError::Ok) {
+                break;
+            }
+            read_logicIndexData();
+            g_cnt_l = (g_cnt_l + 1)%256;
+
+            // send message to client
+            // webSocket.sendTXT(num, "message here");
+
+            // send data to all connected clients
+            // webSocket.broadcastTXT("message here");
+            break;
+        case WStype_BIN:
+            USE_SERIAL.printf("[%u] get binary length: %u\n", num, length);
+            hexdump(payload, length);
+
+            // send message to client
+            // webSocket.sendBIN(num, payload, length);
+            break;
+		case WStype_ERROR:
 		case WStype_FRAGMENT_TEXT_START:
 		case WStype_FRAGMENT_BIN_START:
 		case WStype_FRAGMENT:
@@ -521,37 +581,37 @@ void draw_currentData_2() {
     int y = 0;
 
     /// param name
-    myTOLED.rectangleClear(100, y, 128, y + step_y, true);
-    myTOLED.setTextCursor(100, 0);
+    myTOLED.rectangleClear(107, y, 128, y + step_y, true);
+    myTOLED.setTextCursor(107, 0);
     sprintf(buf, "%3.0f", cur_v[0]);
     myTOLED.print(buf);
     y += step_y;
 
     int i;
     for(i=1; i < 4; i++) {
-        float v = flimit(cur_v[i] / 128.0 * 60, -20.0, 20.0);
+        float v = flimit(cur_v[i] / 128.0 * 8.0 * 25.0/2.0, -25.0, 25.0); // max 4g
 
         // clear
         myTOLED.setTextCursor(0, y);
         myTOLED.rectangleClear(
-            72, y + 2,
-            72 + prev_v[i], y + step_y - 2,
+            89, y,
+            89 + prev_v[i], y + step_y - 2,
             false);
 
         // set
-        myTOLED.setTextCursor(100, y);
+        myTOLED.setTextCursor(114, y);
         sprintf(buf, "%s", param_short[i]);
         myTOLED.print(buf);
         myTOLED.rectangleSet(
-            72, y + 2,
-            72 + v, y + step_y - 2,
+            89, y,
+            89 + v, y + step_y - 2,
             false);
 
         //USE_SERIAL.printf("%s: %f\n", param_short[i], v);
         y += step_y;
         prev_v[i] = v;
     }
-    myTOLED.lineSet(72, 12, 72, 48, 1);
+    myTOLED.lineSet(89, 12, 89, 48, 1);
 }
 
 void draw_logicIndexData_2() {
@@ -576,16 +636,23 @@ void draw_logicIndexData_2() {
         jins_meme_logicIndexData.tensionScore,
         jins_meme_logicIndexData.calmScore,
     };
+    int y = 0;
+
+    /// param name
+    myTOLED.rectangleClear(66, 0, 106, step_y-2, true);
+    myTOLED.setTextCursor(66, 0);
+    sprintf(buf, "%3d", g_cnt_l);
+    myTOLED.print(buf);
+    myTOLED.setTextCursor(0, 0);
 
     int i;
-    int y = 0;
     for(i=0; i < 4; i++) {
-        float v = cur_v[i] * 0.25;
+        float v = cur_v[i] * 0.34; // 0<=cur_v[i]<=100
 
         // clear
         myTOLED.rectangleClear(
-            28, y + 2,
-            28 + prev_v[i], y + step_y - 2,
+            30, y,
+            30 + prev_v[i], y + step_y - 2,
             false);
 
         // set
@@ -593,14 +660,15 @@ void draw_logicIndexData_2() {
         sprintf(buf, "%s", param_short[i]);
         myTOLED.print(buf);
         myTOLED.rectangleSet(
-            28, y + 2,
-            28 + v, y + step_y - 2,
+            30, y,
+            30 + v, y + step_y - 2,
             false);
 
         //USE_SERIAL.printf("%s: %f\n", param_short[i], v);
         y += step_y;
         prev_v[i] = v;
     }
+    myTOLED.lineSet(64, 0, 64, 48, 1);
 }
 
 void draw_currentData() {
